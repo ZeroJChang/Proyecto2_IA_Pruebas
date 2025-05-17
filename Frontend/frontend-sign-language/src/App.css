@@ -1,0 +1,16 @@
+.webcam-container {
+  position: relative;
+  display: inline-block;
+}
+
+.webcam-feed {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.roi-rectangle {
+  position: absolute;
+  border: 2px solid limegreen;
+  pointer-events: none;
+  box-sizing: border-box;
+}
