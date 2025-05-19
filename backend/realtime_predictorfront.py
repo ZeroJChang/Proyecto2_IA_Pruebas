@@ -11,15 +11,13 @@ import json
 import mediapipe as mp
 from tensorflow.keras.models import load_model
 
-# Configuracion
+# Configuración
 IMG_SIZE = 128
 MODEL_PATH = '../model/best_model.h5'
 LABELS_PATH = '../model/labels.npy'
-DICT_PATH = 'word_dict.json'
 
 model = load_model(MODEL_PATH)
 labels = np.load(LABELS_PATH)
-word_dict = json.load(open(DICT_PATH)) if os.path.exists(DICT_PATH) else {}
 engine = pyttsx3.init()
 
 mp_hands = mp.solutions.hands
@@ -63,21 +61,45 @@ def get_hand_roi(frame, hand_landmarks):
 # GUI
 root = tk.Tk()
 root.title("Traductor de Lenguaje de Señas")
+root.geometry("850x650")
 
-video_label = tk.Label(root)
+main_frame = tk.Frame(root)
+main_frame.pack(fill=tk.BOTH, expand=True)
+
+frame_top = tk.Frame(main_frame)
+frame_top.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+frame_video = tk.Frame(main_frame)
+frame_video.pack(side=tk.TOP, pady=5)
+
+frame_info = tk.Frame(main_frame)
+frame_info.pack(side=tk.TOP, pady=5)
+
+frame_bottom = tk.Frame(main_frame, bg="#f0f0f0")
+frame_bottom.pack(side=tk.TOP, fill=tk.X, pady=10)
+
+# Componentes
+video_label = tk.Label(frame_video)
 video_label.pack()
 
-status_label = tk.Label(root, text="Estado: Esperando...", font=("Arial", 12))
-status_label.pack()
+status_label = tk.Label(frame_info, text="Estado: Esperando...", font=("Arial", 12))
+status_label.pack(pady=2)
 
-word_label = tk.Label(root, text="Palabra: ", font=("Arial", 16), fg="blue")
-word_label.pack()
+word_label = tk.Label(frame_info, text="Palabra: ", font=("Arial", 16), fg="blue")
+word_label.pack(pady=2)
 
-prediction_label = tk.Label(root, text="Letra: - (Confianza: -)", font=("Arial", 14))
-prediction_label.pack()
+prediction_label = tk.Label(frame_info, text="Letra: - (Confianza: -)", font=("Arial", 14))
+prediction_label.pack(pady=2)
 
-roi_label = tk.Label(root)
-roi_label.pack(pady=10)
+roi_label = tk.Label(frame_info)
+roi_label.pack(pady=5)
+
+# Botones
+for text, cmd in [("🧹 Limpiar", lambda: limpiar_palabra()), ("⚙️ Ejecutar", lambda: ejecutar_comando()), ("❌ Salir", lambda: salir())]:
+    btn = ttk.Button(frame_bottom, text=text, command=cmd)
+    btn.pack(side=tk.LEFT, expand=True, padx=20, pady=5)
+
+added_letters = set()
 
 def update_video():
     global label, confidence, roi, built_word
@@ -103,6 +125,9 @@ def update_video():
                 confidence = prediction[0][class_idx]
                 cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
                 hand_roi_display = cv2.resize(roi, (IMG_SIZE, IMG_SIZE))
+                if confidence >= 0.8:
+                    built_word += label
+                    print(f"Letra añadida automáticamente: {label} → Palabra: {built_word}")
 
     status_label.config(text="Estado: Mano detectada" if hand_detected else "Estado: Buscando mano...")
     prediction_label.config(text=f"Letra: {label} (Confianza: {confidence:.2f})" if hand_detected else "Letra: - (Confianza: -)")
@@ -120,35 +145,27 @@ def update_video():
     word_label.config(text=f"Palabra: {built_word}")
     root.after(10, update_video)
 
-def guardar_letra():
-    global built_word, label, roi
-    if label:
-        built_word += label
-        os.makedirs('capturas', exist_ok=True)
-        filename = f"capturas/{label}_{uuid.uuid4().hex[:8]}.jpg"
-        if roi is not None:
-            cv2.imwrite(filename, roi)
-
-def borrar_letra():
-    global built_word
-    built_word = built_word[:-1]
-
 def limpiar_palabra():
     global built_word
     built_word = ""
+    print("Palabra limpiada.")
 
 def ejecutar_comando():
     global built_word
     palabra = built_word.upper()
-    if palabra in word_dict:
-        ruta = word_dict[palabra]
-        try:
-            subprocess.Popen(ruta)
-        except Exception as e:
-            print(f"Error al ejecutar: {e}")
-    else:
-        print(f"No se reconoce el comando '{palabra}'")
-    built_word = ""
+    if palabra:
+        if palabra == "O":
+            print("Ejecutando Microsoft Word")
+            subprocess.Popen("winword")
+        elif palabra == "H":
+            print("Ejecutando Bloc de Notas")
+            subprocess.Popen("notepad")
+        else:
+            print(f"No hay acción asignada para '{palabra}'")
+        engine.say(built_word)
+        engine.runAndWait()
+        built_word = ""
+        print("Palabra ejecutada y limpiada.")
 
 def salir():
     root.destroy()
@@ -157,21 +174,6 @@ def salir():
     if built_word:
         engine.say(built_word)
         engine.runAndWait()
-
-frame_buttons = tk.Frame(root)
-frame_buttons.pack(pady=10)
-
-buttons = [
-    ("Guardar Letra (S)", guardar_letra),
-    ("Borrar Última (D)", borrar_letra),
-    ("Limpiar Palabra (C)", limpiar_palabra),
-    ("Ejecutar (Espacio)", ejecutar_comando),
-    ("Salir (Q)", salir)
-]
-
-for i, (text, cmd) in enumerate(buttons):
-    btn = ttk.Button(frame_buttons, text=text, command=cmd)
-    btn.grid(row=0, column=i, padx=5)
 
 update_video()
 root.mainloop()
