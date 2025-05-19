@@ -64,11 +64,15 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const saveLetter = () => {
-    if (letter && confidence > 0.1) {
-      setWord(prev => prev + letter);
-    }
-  };
+const saveLetter = () => {
+  console.log('Letra:', letter, 'Confianza:', confidence);  // Depuración
+
+  if (letter && confidence > 0.01) {
+    setWord(prev => prev + letter);
+  } else {
+  }
+};
+
 
   const deleteLetter = () => {
     setWord(prev => prev.slice(0, -1));
@@ -115,9 +119,9 @@ function App() {
       </div>
       <div className="buttons">
         <button onClick={saveLetter}>📸 Guardar letra</button>
-        <button onClick={deleteLetter}>❌ Borrar</button>
-        <button onClick={clearWord}>🧹 Limpiar</button>
-        <button onClick={sendWord}>🚀 Enviar palabra</button>
+        <button onClick={deleteLetter}>Borrar Letra</button>
+        <button onClick={clearWord}>Limpiar Palabra</button>
+        <button onClick={sendWord}>Enviar palabra</button>
       </div>
       <h2>
         Letra detectada:{' '}
