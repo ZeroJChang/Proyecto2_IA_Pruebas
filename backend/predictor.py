@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
 
-IMG_SIZE = 64
-MODEL_PATH = 'model/sign_model.h5'
+IMG_SIZE = 128
+MODEL_PATH = 'model/best_model.h5'
 LABELS_PATH = 'model/labels.npy'
 
 model = load_model(MODEL_PATH)

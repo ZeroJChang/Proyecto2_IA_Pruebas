@@ -10,7 +10,11 @@ from tensorflow.keras.models import load_model
 
 # Configuración
 IMG_SIZE = 128
+<<<<<<< HEAD
 MODEL_PATH = '../model/sign_model.h5'
+=======
+MODEL_PATH = '../model/best_model.h5'
+>>>>>>> 0c4f74b632219aad48d1f775ee59001001812655
 LABELS_PATH = '../model/labels.npy'
 DICT_PATH = 'word_dict.json'
 
