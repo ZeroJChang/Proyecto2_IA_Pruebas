@@ -76,6 +76,9 @@ word_label.pack()
 prediction_label = tk.Label(root, text="Letra: - (Confianza: -)", font=("Arial", 14))
 prediction_label.pack()
 
+roi_label = tk.Label(root)
+roi_label.pack(pady=10)
+
 def update_video():
     global label, confidence, roi, built_word
     ret, frame = cap.read()
@@ -84,6 +87,7 @@ def update_video():
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(frame_rgb)
     hand_detected = False
+    hand_roi_display = np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.uint8)
 
     if results.multi_hand_landmarks:
         for hand_landmarks in results.multi_hand_landmarks:
@@ -98,13 +102,21 @@ def update_video():
                 label = labels[class_idx]
                 confidence = prediction[0][class_idx]
                 cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
+                hand_roi_display = cv2.resize(roi, (IMG_SIZE, IMG_SIZE))
 
     status_label.config(text="Estado: Mano detectada" if hand_detected else "Estado: Buscando mano...")
     prediction_label.config(text=f"Letra: {label} (Confianza: {confidence:.2f})" if hand_detected else "Letra: - (Confianza: -)")
+
     img = Image.fromarray(frame_rgb)
     imgtk = ImageTk.PhotoImage(image=img)
     video_label.imgtk = imgtk
     video_label.configure(image=imgtk)
+
+    roi_img = Image.fromarray(cv2.cvtColor(hand_roi_display, cv2.COLOR_BGR2RGB))
+    roi_imgtk = ImageTk.PhotoImage(image=roi_img)
+    roi_label.imgtk = roi_imgtk
+    roi_label.configure(image=roi_imgtk)
+
     word_label.config(text=f"Palabra: {built_word}")
     root.after(10, update_video)
 
