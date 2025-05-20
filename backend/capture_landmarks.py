@@ -15,7 +15,7 @@ mp_drawing = mp.solutions.drawing_utils
 output_dir = "dataset_landmarks"
 os.makedirs(output_dir, exist_ok=True)
 
-current_label = "C"
+current_label = "R"
 print(f"Etiqueta actual: {current_label}")
 print("Presiona 'g' para guardar, 'c' para cambiar letra, 'q' para salir.")
 
