@@ -1,153 +1,166 @@
 import os
 import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import classification_report, confusion_matrix, precision_score
-
-from tensorflow.keras.utils import to_categorical
+import tensorflow as tf
+from tensorflow.keras import mixed_precision
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.layers import SeparableConv2D, BatchNormalization, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
 
-# Parámetros generales
-IMG_SIZE = 64
-IMAGE_DIR = 'dataset'
-EPOCHS = 50
-BATCH_SIZE = 32
+# --- Configuración ---
+DATA_DIR = 'dataset'         # Carpeta con las imágenes
+IMG_SIZE = 128                # Reducir resolución para acelerar
+BATCH_SIZE = 128             # Tamaño de lote grande para mejor uso de GPU/CPU
+EPOCHS = 30                  # Épocas moderadas con EarlyStopping y callbacks
+AUTOTUNE = tf.data.AUTOTUNE  # Paralelismo en tf.data
 
-def get_label_from_filename(filename):
-    return filename[0].upper()
+# --- Detectar GPU y mixed precision ---
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    mixed_precision.set_global_policy('mixed_float16')
+    print(f"GPUs detectadas: {gpus}. Usando mixed precision.")
+else:
+    print("No se detectó GPU. Entrenando en float32.")
 
-def load_images_and_labels():
-    data, labels = [], []
-    for filename in os.listdir(IMAGE_DIR):
-        if filename.endswith(".jpg"):
-            path = os.path.join(IMAGE_DIR, filename)
-            try:
-                img = cv2.imread(path)
-                img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                img = img / 255.0
-                data.append(img)
-                labels.append(get_label_from_filename(filename))
-            except Exception as e:
-                print(f"❌ Error con {filename}: {e}")
-    return np.array(data), np.array(labels)
+# --- Leer rutas y etiquetas ---
+all_paths = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
+             if f.lower().endswith(('.jpg','.png','.jpeg'))]
+labels = [os.path.basename(p)[0].upper() for p in all_paths]
+classes = sorted(set(labels))
+label_to_index = {label: idx for idx, label in enumerate(classes)}
+label_indices = np.array([label_to_index[l] for l in labels])
 
-# Cargar y procesar datos
-X, y = load_images_and_labels()
-X = X.reshape(-1, IMG_SIZE, IMG_SIZE, 1)
-
-# Codificar etiquetas
-le = LabelEncoder()
-y_encoded = le.fit_transform(y)
-y_cat = to_categorical(y_encoded)
-
-# Dividir datos
-X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, stratify=y_cat, random_state=42)
-
-# Aumentación de datos más agresiva
-datagen = ImageDataGenerator(
-    rotation_range=20,
-    zoom_range=0.2,
-    width_shift_range=0.15,
-    height_shift_range=0.15,
-    shear_range=0.1
+# --- Calcular pesos de clase (balanceo) ---
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.arange(len(classes)),
+    y=label_indices
 )
-datagen.fit(X_train)
+class_weight_dict = {i: w for i, w in enumerate(class_weights)}
 
-# Calcular pesos para clases desbalanceadas
-class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_encoded), y=y_encoded)
-class_weight_dict = dict(enumerate(class_weights))
+# --- Crear dataset con tf.data ---
+paths_ds = tf.data.Dataset.from_tensor_slices(all_paths)
+labels_ds = tf.data.Dataset.from_tensor_slices(label_indices)
+dataset = tf.data.Dataset.zip((paths_ds, labels_ds))
+dataset = dataset.shuffle(buffer_size=len(all_paths), seed=42)
 
-# Modelo CNN básico optimizado
+# Funciones de preprocesamiento y aumento
+
+def parse_and_preprocess(path, label):
+    img = tf.io.read_file(path)
+    img = tf.io.decode_jpeg(img, channels=1)
+    img = tf.image.resize(img, [IMG_SIZE, IMG_SIZE])
+    img = img / 255.0
+    return img, label
+
+
+def augment(img, label):
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.random_brightness(img, 0.1)
+    img = tf.image.random_contrast(img, 0.9, 1.1)
+    return img, label
+
+# Dividir en entrenamiento y validación
+dataset_size = len(all_paths)
+train_size = int(0.8 * dataset_size)
+train_ds = (dataset.take(train_size)
+            .map(parse_and_preprocess, num_parallel_calls=AUTOTUNE)
+            .map(augment, num_parallel_calls=AUTOTUNE)
+            .cache()
+            .batch(BATCH_SIZE)
+            .prefetch(AUTOTUNE))
+
+val_ds = (dataset.skip(train_size)
+          .map(parse_and_preprocess, num_parallel_calls=AUTOTUNE)
+          .cache()
+          .batch(BATCH_SIZE)
+          .prefetch(AUTOTUNE))
+
+# --- Definir el modelo CNN eficiente ---
 model = Sequential([
-    Conv2D(32, (3, 3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 1)),
-    MaxPooling2D(2, 2),
-    Conv2D(64, (3, 3), activation='relu'),
-    MaxPooling2D(2, 2),
+    tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 1)),
+    SeparableConv2D(32, 3, activation='relu'),
+    BatchNormalization(),
+    MaxPooling2D(),
+
+    SeparableConv2D(64, 3, activation='relu'),
+    BatchNormalization(),
+    MaxPooling2D(),
+
+    SeparableConv2D(128, 3, activation='relu'),
+    BatchNormalization(),
+    MaxPooling2D(),
+
     Flatten(),
     Dense(128, activation='relu'),
-    Dropout(0.5),
-    Dense(len(np.unique(y)), activation='softmax')
+    Dropout(0.3),
+    Dense(len(classes), activation='softmax', dtype='float32')
 ])
 
-model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+model.compile(
+    optimizer='adam',
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
+)
 model.summary()
 
-# Entrenamiento
+# --- Callbacks ---
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3),
+    ModelCheckpoint('model/best_model.h5', save_best_only=True)
+]
+
+# --- Entrenamiento ---
 history = model.fit(
-    datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
-    steps_per_epoch=len(X_train) // BATCH_SIZE,
+    train_ds,
+    validation_data=val_ds,
     epochs=EPOCHS,
-    validation_data=(X_test, y_test),
-    callbacks=[EarlyStopping(patience=5)],
+    callbacks=callbacks,
     class_weight=class_weight_dict
 )
 
-# Guardar modelo
+# --- Guardar modelo y etiquetas ---
 os.makedirs('model', exist_ok=True)
 model.save('model/sign_model.h5')
-np.save('model/labels.npy', le.classes_)
+with open('model/labels.txt', 'w') as f:
+    for c in classes:
+        f.write(f"{c}\n")
+# Guardar etiquetas en numpy para la UI
+np.save(os.path.join('model','labels.npy'), np.array(classes))
+print("✔️ Etiquetas guardadas en 'model/labels.npy'.")
 
-# Resultados de entrenamiento
-plt.figure(figsize=(10, 4))
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Entrenamiento')
-plt.plot(history.history['val_accuracy'], label='Validación')
-plt.title('Precisión')
-plt.xlabel('Épocas')
-plt.ylabel('Precisión')
-plt.legend()
+print("✔️ Entrenamiento completado. Modelo guardado en 'model/sign_model.h5'.")
 
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Entrenamiento')
-plt.plot(history.history['val_loss'], label='Validación')
-plt.title('Pérdida')
-plt.xlabel('Épocas')
-plt.ylabel('Pérdida')
-plt.legend()
-plt.tight_layout()
-plt.savefig('model/training_metrics.png')
-plt.show()
+# --- Evaluación en el set de validación ---
+print("\n🔍 Evaluación en validación:")
+y_true = []
+y_pred = []
+for imgs, labels in val_ds:
+    preds = model.predict(imgs)
+    y_pred.extend(np.argmax(preds, axis=1))
+    y_true.extend(labels.numpy())
 
-# Predicción y métricas
-y_pred = model.predict(X_test)
-y_pred_labels = np.argmax(y_pred, axis=1)
-y_true_labels = np.argmax(y_test, axis=1)
+print("\n📊 Reporte de Clasificación:")
+print(classification_report(y_true, y_pred, target_names=classes, digits=4))
 
-print("\n📊 Reporte de clasificación:")
-report = classification_report(y_true_labels, y_pred_labels, target_names=le.classes_)
-print(report)
+cm = confusion_matrix(y_true, y_pred)
+print("\n🗂 Matriz de Confusión:")
+print(cm)
 
-# Guardar reporte
-with open("model/classification_report.txt", "w") as f:
-    f.write(report)
-
-# Matriz de confusión
-cm = confusion_matrix(y_true_labels, y_pred_labels)
+# Graficar y guardar la matriz de confusión
 plt.figure(figsize=(10, 8))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=le.classes_, yticklabels=le.classes_)
-plt.xlabel('Predicho')
-plt.ylabel('Real')
+plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
 plt.title('Matriz de Confusión')
+plt.colorbar()
+tick_marks = np.arange(len(classes))
+plt.xticks(tick_marks, classes, rotation=90)
+plt.yticks(tick_marks, classes)
+plt.ylabel('Verdaderos')
+plt.xlabel('Predichos')
 plt.tight_layout()
 plt.savefig('model/confusion_matrix.png')
-plt.show()
-
-# Precisión por clase
-precision_per_class = precision_score(y_true_labels, y_pred_labels, average=None)
-plt.figure(figsize=(10, 5))
-sns.barplot(x=le.classes_, y=precision_per_class)
-plt.title("Precisión por letra")
-plt.xlabel("Letra")
-plt.ylabel("Precisión")
-plt.ylim(0, 1)
-plt.tight_layout()
-plt.savefig('model/precision_per_letter.png')
-plt.show()
+plt.close()
+print(" Matriz de confusión guardada en 'model/confusion_matrix.png'.")
